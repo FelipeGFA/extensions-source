@@ -28,11 +28,31 @@ with REMOTE_REPO.joinpath("index.json").open() as remote_index_file:
 with LOCAL_REPO.joinpath("index.min.json").open() as local_index_file:
     local_index = json.load(local_index_file)
 
+# Criar um dicionário para lookup rápido por pkg
+remote_pkg_to_item = {item["pkg"]: item for item in remote_index}
+
+filtered_local_index = []
+downgrades_detected = False
+
+for item in local_index:
+    pkg = item["pkg"]
+    if pkg in remote_pkg_to_item:
+        remote_item = remote_pkg_to_item[pkg]
+        if item["code"] < remote_item["code"]:
+            print(f"Downgrade detectado para {pkg}: nova versão {item['version']} (code {item['code']}) < existente {remote_item['version']} (code {remote_item['code']}). Pulando atualização.")
+            downgrades_detected = True
+            continue
+    filtered_local_index.append(item)
+
+if downgrades_detected:
+    print("Downgrades detectados. Abortando merge para evitar push de versões mais antigas.")
+    sys.exit(1)
+
 index = [
     item for item in remote_index
     if not any([item["pkg"].endswith(f".{module}") for module in to_delete])
 ]
-index.extend(local_index)
+index.extend(filtered_local_index)
 index.sort(key=lambda x: x["pkg"])
 
 with REMOTE_REPO.joinpath("index.json").open("w", encoding="utf-8") as index_file:
