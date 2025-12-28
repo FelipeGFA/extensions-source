@@ -3,3 +3,5 @@
 
 * text=auto eol=lf
 *.bat text eol=crlf
+.github merge=ours
+README.md merge=ours
