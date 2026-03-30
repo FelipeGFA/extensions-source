@@ -1,120 +1,543 @@
 package eu.kanade.tachiyomi.extension.pt.yomumangas
 
 import eu.kanade.tachiyomi.source.model.Filter
-import okhttp3.HttpUrl
+import eu.kanade.tachiyomi.source.model.FilterList
 
-interface UrlQueryFilter {
-    fun addQueryParameter(url: HttpUrl.Builder)
+internal val yomuMangasFilters by lazy {
+    FilterList(
+        Filter.Header("Selecione os filtros desejados"),
+        GenreFilter(),
+        Filter.Separator(),
+        TagFilter(),
+        Filter.Separator(),
+        StatusFilter(),
+        Filter.Separator(),
+        FormatFilter(),
+        Filter.Separator(),
+        NsfwFilter(),
+        HentaiFilter(),
+    )
 }
 
-class NsfwContentFilter :
-    Filter.CheckBox("Conteúdo NSFW"),
-    UrlQueryFilter {
-    override fun addQueryParameter(url: HttpUrl.Builder) {
-        if (state) {
-            url.addQueryParameter("nsfw", "true")
-        }
-    }
-}
-
-class AdultContentFilter :
-    Filter.CheckBox("Conteúdo adulto"),
-    UrlQueryFilter {
-    override fun addQueryParameter(url: HttpUrl.Builder) {
-        if (state) {
-            url.addQueryParameter("hentai", "true")
-        }
-    }
-}
-
-open class EnhancedSelect<T>(name: String, values: Array<T>) : Filter.Select<T>(name, values) {
-    val selected: T
-        get() = values[state]
-}
-
-data class Status(val name: String, val value: String) {
-    override fun toString() = name
-}
-
-class StatusFilter(statusList: List<Status>) :
-    EnhancedSelect<Status>("Status", statusList.toTypedArray()),
-    UrlQueryFilter {
-
-    override fun addQueryParameter(url: HttpUrl.Builder) {
-        if (state > 0) {
-            url.addQueryParameter("status", selected.value)
-        }
-    }
-}
-
-data class Type(val name: String, val value: String) {
-    override fun toString() = name
-}
-
-class TypeFilter(typesList: List<Type>) :
-    EnhancedSelect<Type>("Tipo", typesList.toTypedArray()),
-    UrlQueryFilter {
-
-    override fun addQueryParameter(url: HttpUrl.Builder) {
-        if (state > 0) {
-            url.addQueryParameter("type", selected.value)
-        }
-    }
-}
-
-class Genre(name: String, val id: String) : Filter.CheckBox(name) {
-    override fun toString() = name
-}
-
-class GenreFilter(genres: List<Genre>) :
-    Filter.Group<Genre>("Gêneros", genres),
-    UrlQueryFilter {
-
-    override fun addQueryParameter(url: HttpUrl.Builder) {
-        state.filter(Genre::state)
-            .forEach { url.addQueryParameter("genres[]", it.id) }
-    }
-}
-
-val genresList: List<Genre> = listOf(
-    Genre("Ação", "1"),
-    Genre("Aventura", "8"),
-    Genre("Comédia", "2"),
-    Genre("Drama", "3"),
-    Genre("Ecchi", "15"),
-    Genre("Esportes", "14"),
-    Genre("Fantasia", "6"),
-    Genre("Hentai", "19"),
-    Genre("Horror", "4"),
-    Genre("Mahou shoujo", "18"),
-    Genre("Mecha", "17"),
-    Genre("Mistério", "7"),
-    Genre("Música", "16"),
-    Genre("Psicológico", "9"),
-    Genre("Romance", "13"),
-    Genre("Sci-fi", "11"),
-    Genre("Slice of life", "10"),
-    Genre("Sobrenatural", "5"),
-    Genre("Suspense", "12"),
+internal data class SearchFilterState(
+    val includedGenres: List<String> = emptyList(),
+    val includedTags: List<String> = emptyList(),
+    val selectedStatus: String? = null,
+    val selectedFormat: String? = null,
+    val showNsfw: Boolean = true,
+    val showHentai: Boolean = true,
 )
 
-val statusList: List<Status> = listOf(
-    Status("Todos", ""),
-    Status("Finalizado", "COMPLETE"),
-    Status("Em lançando", "ONGOING"),
-    Status("Hiato", "HIATUS"),
-    Status("Pausado", "ONHOLD"),
-    Status("Planejado", "PLANNED"),
-    Status("Arquivado", "ARCHIVED"),
-    Status("Cancelado", "CANCELLED"),
+internal fun FilterList.toSearchFilterState(): SearchFilterState = SearchFilterState(
+    includedGenres = filterIsInstance<GenreFilter>().firstOrNull().selectedValues(),
+    includedTags = filterIsInstance<TagFilter>().firstOrNull().selectedValues(),
+    selectedStatus = filterIsInstance<StatusFilter>().firstOrNull().selectedValue(),
+    selectedFormat = filterIsInstance<FormatFilter>().firstOrNull().selectedValue(),
+    showNsfw = filterIsInstance<NsfwFilter>().firstOrNull()?.state ?: true,
+    showHentai = filterIsInstance<HentaiFilter>().firstOrNull()?.state ?: true,
 )
 
-val typesList: List<Type> = listOf(
-    Type("Todos", ""),
-    Type("Mangá", "MANGA"),
-    Type("Manhwa", "MANHWA"),
-    Type("Manhua", "MANHUA"),
-    Type("One-shot", "ONESHOT"),
-    Type("Doujinshi", "DOUJINSHI"),
-    Type("Outros", "OTHER"),
+internal data class FilterOption(
+    val name: String,
+    val id: String,
+    val adult: Boolean = false,
+) {
+    override fun toString(): String = name.trim()
+}
+
+private open class InclusionCheckBox(name: String, val value: String) : Filter.CheckBox(name.trim(), false)
+
+private class GenreCheckBox(option: FilterOption) : InclusionCheckBox(option.name, option.id)
+
+private class TagCheckBox(option: FilterOption) : InclusionCheckBox(option.name, option.id)
+
+private open class OptionSelect(name: String, options: List<FilterOption>) : Filter.Select<FilterOption>(name, options.toTypedArray())
+
+private class StatusFilter : OptionSelect("Status", listOf(FilterOption("Todos", "")) + statusOptions)
+
+private class FormatFilter : OptionSelect("Formato", listOf(FilterOption("Todos", "")) + formatOptions)
+
+private class GenreFilter :
+    Filter.Group<GenreCheckBox>(
+        "Gêneros",
+        genreOptions.map(::GenreCheckBox),
+    )
+
+private class TagFilter :
+    Filter.Group<TagCheckBox>(
+        "Tags",
+        tagOptions.map(::TagCheckBox),
+    )
+
+private class NsfwFilter : Filter.CheckBox("NSFW", true)
+
+private class HentaiFilter : Filter.CheckBox("Hentai", true)
+
+private fun <T : InclusionCheckBox> Filter.Group<T>?.selectedValues(): List<String> = this?.state
+    ?.filter { it.state }
+    ?.map(InclusionCheckBox::value)
+    .orEmpty()
+
+private fun OptionSelect?.selectedValue(): String? = this?.values
+    ?.getOrNull(this.state)
+    ?.id
+    ?.takeIf(String::isNotBlank)
+
+internal val statusOptions = listOf(
+    FilterOption("Finalizado", "COMPLETE"),
+    FilterOption("Em andamento", "ONGOING"),
+    FilterOption("Hiato", "HIATUS"),
+    FilterOption("Pausado", "ONHOLD"),
+    FilterOption("Planejado", "PLANNED"),
+    FilterOption("Arquivado", "ARCHIVED"),
+    FilterOption("Cancelado", "CANCELLED"),
+)
+
+internal val formatOptions = listOf(
+    FilterOption("Mangá", "MANGA"),
+    FilterOption("Manhwa", "MANHWA"),
+    FilterOption("Manhua", "MANHUA"),
+    FilterOption("Novel", "NOVEL"),
+    FilterOption("One-Shot", "ONESHOT"),
+    FilterOption("Doujinshi", "DOUJINSHI"),
+    FilterOption("Outro", "OTHER"),
+)
+
+internal val genreOptions = listOf(
+    FilterOption("Romance", "13", false),
+    FilterOption("Ação", "1", false),
+    FilterOption("Aventura", "2", false),
+    FilterOption("Drama", "3", false),
+    FilterOption("Sobrenatural", "4", false),
+    FilterOption("Comédia", "5", false),
+    FilterOption("Terror", "6", false),
+    FilterOption("Fantasia", "7", false),
+    FilterOption("Psicológico", "8", false),
+    FilterOption("Mistério", "9", false),
+    FilterOption("Suspense", "10", false),
+    FilterOption("Esportes", "11", false),
+    FilterOption("Cotidiano", "12", false),
+    FilterOption("Ecchi", "16", true),
+    FilterOption("Hentai", "17", true),
+    FilterOption("Mecha", "15", false),
+    FilterOption("Ficção Científica", "14", false),
+    FilterOption("Horror", "20", false),
+    FilterOption("Mystery", "21", false),
+    FilterOption("Psychological", "22", false),
+    FilterOption("Action", "23", false),
+    FilterOption("Adventure", "24", false),
+    FilterOption("Fantasy", "25", false),
+    FilterOption("Slice of Life", "26", false),
+    FilterOption("Comedy", "27", false),
+    FilterOption("Supernatural", "28", false),
+    FilterOption("Sci-Fi", "29", false),
+    FilterOption("Sports", "30", false),
+    FilterOption("Thriller", "31", false),
+    FilterOption("Cultivo", "32", false),
+    FilterOption("Artes Marciais", "33", false),
+    FilterOption("Regressão", "34", false),
+    FilterOption("Reencarnação ", "35", false),
+    FilterOption("Gênio", "36", false),
+    FilterOption("Magia", "38", false),
+    FilterOption("Murim", "37", false),
+    FilterOption("Isekai", "40", false),
+    FilterOption("Yuri", "41", false),
+    FilterOption("Escolar", "42", false),
+    FilterOption("Mahou Shoujo", "43", false),
+    FilterOption("Music", "44", false),
+)
+
+internal val tagOptions = listOf(
+    FilterOption("Destaques", "1", false),
+    FilterOption("Temporada", "2", false),
+    FilterOption("Shounen", "6", false),
+    FilterOption("Time Skip", "26", false),
+    FilterOption("Lost Civilization", "28", false),
+    FilterOption("Anachronism", "29", false),
+    FilterOption("Anthropomorphism", "30", false),
+    FilterOption("Religion", "31", false),
+    FilterOption("Slavery", "32", false),
+    FilterOption("Large Breasts", "33", true),
+    FilterOption("Environmental", "34", false),
+    FilterOption("Swordplay", "35", false),
+    FilterOption("Kemonomimi", "36", false),
+    FilterOption("Mythology", "37", false),
+    FilterOption("Gangs", "38", false),
+    FilterOption("Assassins", "39", false),
+    FilterOption("Animals", "40", false),
+    FilterOption("Anti-Hero", "41", false),
+    FilterOption("Espionage", "42", false),
+    FilterOption("Drugs", "43", false),
+    FilterOption("Cyborg", "44", false),
+    FilterOption("Coming of Age", "45", false),
+    FilterOption("Adoption", "46", false),
+    FilterOption("Battle Royale", "47", false),
+    FilterOption("Henshin", "48", false),
+    FilterOption("Skeleton", "49", false),
+    FilterOption("Amnesia", "50", false),
+    FilterOption("Medicine", "51", false),
+    FilterOption("Samurai", "52", false),
+    FilterOption("Robots", "53", false),
+    FilterOption("Desert", "54", false),
+    FilterOption("Food", "55", false),
+    FilterOption("Female Harem", "56", false),
+    FilterOption("Revenge", "57", false),
+    FilterOption("Meta", "58", false),
+    FilterOption("Angels", "59", false),
+    FilterOption("Ninja", "60", false),
+    FilterOption("Guns", "61", false),
+    FilterOption("Mermaid", "62", false),
+    FilterOption("Dragons", "63", false),
+    FilterOption("Centaur", "64", false),
+    FilterOption("LGBTQ+ Themes", "65", false),
+    FilterOption("Time Manipulation", "66", false),
+    FilterOption("Monster Girl", "67", false),
+    FilterOption("Oiran", "68", false),
+    FilterOption("Trains", "69", false),
+    FilterOption("Memory Manipulation", "70", false),
+    FilterOption("Zombie", "71", false),
+    FilterOption("Dinosaurs", "72", false),
+    FilterOption("Aliens", "73", false),
+    FilterOption("Gender Bending", "74", false),
+    FilterOption("Transgender", "75", false),
+    FilterOption("Clone", "76", false),
+    FilterOption("Body Swapping", "77", false),
+    FilterOption("Demons", "78", false),
+    FilterOption("Historical", "80", false),
+    FilterOption("Body Horror", "81", false),
+    FilterOption("Rural", "82", false),
+    FilterOption("Shapeshifting", "83", false),
+    FilterOption("Disability", "84", false),
+    FilterOption("Orphan", "85", false),
+    FilterOption("Family Life", "86", false),
+    FilterOption("Afterlife", "87", false),
+    FilterOption("Age Regression", "88", false),
+    FilterOption("Reincarnation", "89", false),
+    FilterOption("Youkai", "90", false),
+    FilterOption("Crossdressing", "91", false),
+    FilterOption("Polyamorous", "92", false),
+    FilterOption("Bisexual", "93", false),
+    FilterOption("Urban Fantasy", "94", false),
+    FilterOption("Dissociative Identities", "95", false),
+    FilterOption("Cosmic Horror", "96", false),
+    FilterOption("Urban", "97", false),
+    FilterOption("Survival", "98", false),
+    FilterOption("Work", "99", false),
+    FilterOption("Monster Boy", "100", false),
+    FilterOption("Cult", "101", false),
+    FilterOption("Heterosexual", "102", false),
+    FilterOption("Human Pet", "103", false),
+    FilterOption("Psychosexual", "104", false),
+    FilterOption("Yandere", "105", false),
+    FilterOption("Philosophy", "106", false),
+    FilterOption("Primarily Teen Cast", "107", false),
+    FilterOption("Nudity", "108", false),
+    FilterOption("Necromancy", "109", false),
+    FilterOption("Cannibalism", "110", false),
+    FilterOption("Delinquents", "111", false),
+    FilterOption("Mafia", "112", false),
+    FilterOption("School", "113", false),
+    FilterOption("Yakuza", "114", false),
+    FilterOption("Tsundere", "115", false),
+    FilterOption("Chimera", "116", false),
+    FilterOption("Motorcycles", "117", false),
+    FilterOption("Yuri", "118", false),
+    FilterOption("Surreal Comedy", "119", false),
+    FilterOption("Pandemic", "120", false),
+    FilterOption("Seinen", "121", false),
+    FilterOption("Space", "122", false),
+    FilterOption("Foreign", "123", false),
+    FilterOption("Magic", "125", false),
+    FilterOption("Rehabilitation", "126", false),
+    FilterOption("Torture", "127", false),
+    FilterOption("Fairy", "128", false),
+    FilterOption("Witch", "130", false),
+    FilterOption("Elf", "131", false),
+    FilterOption("Prostitution", "133", false),
+    FilterOption("Kaiju", "134", false),
+    FilterOption("Achronological Order", "135", false),
+    FilterOption("Pregnant", "136", false),
+    FilterOption("Tomboy", "137", false),
+    FilterOption("Incest", "138", false),
+    FilterOption("Dungeon", "139", false),
+    FilterOption("Masturbation", "141", false),
+    FilterOption("Kingdom Management", "142", false),
+    FilterOption("Gore", "79", true),
+    FilterOption("Vore", "140", false),
+    FilterOption("Viagem", "4", false),
+    FilterOption("Busca Familiar", "5", false),
+    FilterOption("Super Poderes", "8", false),
+    FilterOption("Tragédia", "10", false),
+    FilterOption("Navios", "11", false),
+    FilterOption("Militar", "12", false),
+    FilterOption("Guerra", "20", false),
+    FilterOption("Politica", "17", false),
+    FilterOption("Pós Apocaliptico", "19", false),
+    FilterOption("Protagonista Feminina", "27", false),
+    FilterOption("Terrorismo", "18", false),
+    FilterOption("Elenco Coletivo", "7", false),
+    FilterOption("Crime", "13", false),
+    FilterOption("Conspiração", "14", false),
+    FilterOption("Deuses", "15", false),
+    FilterOption("Fugitivo", "16", false),
+    FilterOption("Pastelão", "21", false),
+    FilterOption("Distopia", "22", false),
+    FilterOption("Prisão", "24", false),
+    FilterOption("Rape", "124", true),
+    FilterOption("Sadism", "129", true),
+    FilterOption("Group Sex", "132", true),
+    FilterOption("Fellatio", "143", false),
+    FilterOption("Martial Arts", "144", false),
+    FilterOption("Biographical", "145", false),
+    FilterOption("Ghost", "146", false),
+    FilterOption("Outdoor", "147", false),
+    FilterOption("Agriculture", "148", false),
+    FilterOption("Language Barrier", "149", false),
+    FilterOption("Twins", "150", false),
+    FilterOption("Noir", "151", false),
+    FilterOption("Detective", "152", false),
+    FilterOption("Police", "153", false),
+    FilterOption("Alchemy", "155", false),
+    FilterOption("Steampunk", "156", false),
+    FilterOption("Cars", "157", false),
+    FilterOption("Kuudere", "158", false),
+    FilterOption("Primarily Male Cast", "159", false),
+    FilterOption("Vikings", "160", false),
+    FilterOption("Archery", "161", false),
+    FilterOption("Basketball", "162", false),
+    FilterOption("Royal Affairs", "163", false),
+    FilterOption("Ancient China", "164", false),
+    FilterOption("Spearplay", "165", false),
+    FilterOption("Volleyball", "166", false),
+    FilterOption("School Club", "167", false),
+    FilterOption("Denpa", "168", false),
+    FilterOption("Golf", "169", false),
+    FilterOption("Love Triangle", "170", false),
+    FilterOption("College", "171", false),
+    FilterOption("Bar", "172", false),
+    FilterOption("Scuba Diving", "173", false),
+    FilterOption("Coastal", "174", false),
+    FilterOption("Otaku Culture", "175", false),
+    FilterOption("Death Game", "176", false),
+    FilterOption("Video Games", "177", false),
+    FilterOption("Card Battle", "178", false),
+    FilterOption("Asexual", "179", false),
+    FilterOption("Virtual World", "180", false),
+    FilterOption("Bullying", "181", false),
+    FilterOption("Filmmaking", "182", false),
+    FilterOption("Episodic", "183", false),
+    FilterOption("Iyashikei", "184", false),
+    FilterOption("Fairy Tale", "185", false),
+    FilterOption("Cyberpunk", "186", false),
+    FilterOption("Parody", "187", false),
+    FilterOption("Homeless", "188", false),
+    FilterOption("Judo", "189", false),
+    FilterOption("Shrine Maiden", "190", false),
+    FilterOption("Idol", "191", false),
+    FilterOption("Drawing", "192", false),
+    FilterOption("Nekomimi", "193", false),
+    FilterOption("Full Color", "194", false),
+    FilterOption("Educational", "195", false),
+    FilterOption("Cute Boys Doing Cute Things", "196", false),
+    FilterOption("Male Harem", "197", false),
+    FilterOption("Tanned Skin", "198", false),
+    FilterOption("Boys' Love", "199", false),
+    FilterOption("Snowscape", "201", false),
+    FilterOption("Femboy", "202", false),
+    FilterOption("Photography", "203", false),
+    FilterOption("Mopeds", "204", false),
+    FilterOption("Cycling", "205", false),
+    FilterOption("Fitness", "206", false),
+    FilterOption("Gambling", "207", false),
+    FilterOption("Superhero", "208", false),
+    FilterOption("Satire", "209", false),
+    FilterOption("Estranged Family", "210", false),
+    FilterOption("Astronomy", "211", false),
+    FilterOption("Isekai", "212", false),
+    FilterOption("Crossover", "213", false),
+    FilterOption("Artificial Intelligence", "214", false),
+    FilterOption("Real Robot", "215", false),
+    FilterOption("Agender", "216", false),
+    FilterOption("Age Gap", "217", false),
+    FilterOption("Acting", "218", false),
+    FilterOption("Primarily Female Cast", "219", false),
+    FilterOption("Cosplay", "220", false),
+    FilterOption("VTuber", "221", false),
+    FilterOption("Space Opera", "222", false),
+    FilterOption("Goblin", "223", false),
+    FilterOption("Mixed Gender Harem", "224", false),
+    FilterOption("Inseki", "225", false),
+    FilterOption("POV", "226", false),
+    FilterOption("Werewolf", "227", false),
+    FilterOption("Primarily Child Cast", "228", false),
+    FilterOption("Firefighters", "230", false),
+    FilterOption("Maids", "231", false),
+    FilterOption("Alternate Universe", "232", false),
+    FilterOption("Succubus", "233", false),
+    FilterOption("Josei", "234", false),
+    FilterOption("Parenthood", "235", false),
+    FilterOption("Tokusatsu", "236", false),
+    FilterOption("Super Robot", "237", false),
+    FilterOption("Chuunibyou", "238", false),
+    FilterOption("Circus", "239", false),
+    FilterOption("Acrobatics", "240", false),
+    FilterOption("Economics", "241", false),
+    FilterOption("Fashion", "242", false),
+    FilterOption("Gyaru", "243", false),
+    FilterOption("Makeup", "244", false),
+    FilterOption("Unrequited Love", "245", false),
+    FilterOption("Konbini", "246", false),
+    FilterOption("Triads", "247", false),
+    FilterOption("Wuxia", "248", false),
+    FilterOption("Software Development", "249", false),
+    FilterOption("Marriage", "250", false),
+    FilterOption("Aromantic", "251", false),
+    FilterOption("Tennis", "252", false),
+    FilterOption("Ojou-sama", "253", false),
+    FilterOption("Teacher", "255", false),
+    FilterOption("Nakadashi", "256", false),
+    FilterOption("Defloration", "260", false),
+    FilterOption("Threesome", "263", false),
+    FilterOption("Ashikoki", "266", false),
+    FilterOption("Deepthroat", "267", false),
+    FilterOption("Facial", "271", false),
+    FilterOption("Sumata", "274", false),
+    FilterOption("Voyeur", "275", false),
+    FilterOption("Vampire", "277", false),
+    FilterOption("Nun", "278", false),
+    FilterOption("Exorcism", "279", false),
+    FilterOption("Masochism", "276", true),
+    FilterOption("Boobjob", "272", true),
+    FilterOption("Cunnilingus", "273", true),
+    FilterOption("Anal Sex", "264", true),
+    FilterOption("Sex Toys", "270", true),
+    FilterOption("Public Sex", "269", true),
+    FilterOption("Handjob", "268", true),
+    FilterOption("Netorare", "265", true),
+    FilterOption("MILF", "261", true),
+    FilterOption("Squirting", "262", true),
+    FilterOption("Piratas", "3", false),
+    FilterOption("Protagonista Masculino", "9", false),
+    FilterOption("Elenco Adulto", "23", false),
+    FilterOption("Netorase", "258", true),
+    FilterOption("Netori", "257", true),
+    FilterOption("Virginity", "259", true),
+    FilterOption("Ahegao", "254", true),
+    FilterOption("Scat", "229", true),
+    FilterOption("Zoophilia", "200", true),
+    FilterOption("Suicide", "154", true),
+    FilterOption("Male Protagonist", "280", false),
+    FilterOption("Chibi", "281", false),
+    FilterOption("Post-Apocalyptic", "282", false),
+    FilterOption("Travel", "283", false),
+    FilterOption("Female Protagonist", "284", false),
+    FilterOption("Politics", "285", false),
+    FilterOption("Time Loop", "286", false),
+    FilterOption("Long Strip", "287", false),
+    FilterOption("War", "288", false),
+    FilterOption("Super Power", "289", false),
+    FilterOption("Gods", "290", false),
+    FilterOption("Cultivation", "291", false),
+    FilterOption("Military", "292", false),
+    FilterOption("Tragedy", "293", false),
+    FilterOption("Terrorism", "294", false),
+    FilterOption("Criminal Organization", "295", false),
+    FilterOption("Boxing", "296", false),
+    FilterOption("Curses", "297", false),
+    FilterOption("Conspiracy", "298", false),
+    FilterOption("Ensemble Cast", "299", false),
+    FilterOption("Found Family", "300", false),
+    FilterOption("E-Sports", "301", false),
+    FilterOption("Primarily Adult Cast", "302", false),
+    FilterOption("Outdoor Activities", "303", false),
+    FilterOption("Hikikomori", "304", false),
+    FilterOption("4-koma", "305", false),
+    FilterOption("Dystopian", "306", false),
+    FilterOption("Class Struggle", "307", false),
+    FilterOption("Fake Relationship", "308", false),
+    FilterOption("Cute Girls Doing Cute Things", "309", false),
+    FilterOption("Cohabitation", "310", false),
+    FilterOption("Slapstick", "311", false),
+    FilterOption("Football", "312", false),
+    FilterOption("Athletics", "313", false),
+    FilterOption("Badminton", "314", false),
+    FilterOption("Shoujo", "315", false),
+    FilterOption("Butler", "316", false),
+    FilterOption("Wrestling", "317", false),
+    FilterOption("Cheerleading", "318", false),
+    FilterOption("Go", "319", false),
+    FilterOption("Board Game", "320", false),
+    FilterOption("Pirates", "321", false),
+    FilterOption("Restaurant", "322", false),
+    FilterOption("Airsoft", "323", false),
+    FilterOption("Teens' Love", "324", false),
+    FilterOption("Indigenous Cultures", "325", false),
+    FilterOption("Boarding School", "326", false),
+    FilterOption("Fugitive", "327", false),
+    FilterOption("Rescue", "328", false),
+    FilterOption("Ero Guro", "329", false),
+    FilterOption("Rakugo", "330", false),
+    FilterOption("Augmented Reality", "331", false),
+    FilterOption("Medieval", "332", false),
+    FilterOption("Ships", "333", false),
+    FilterOption("Wilderness", "334", false),
+    FilterOption("Office", "335", false),
+    FilterOption("Bondage", "336", false),
+    FilterOption("Lactation", "337", false),
+    FilterOption("Femdom", "338", false),
+    FilterOption("Cultivo", "25", false),
+    FilterOption("Baseball", "339", false),
+    FilterOption("Aviation", "340", false),
+    FilterOption("Matchmaking", "341", false),
+    FilterOption("Futanari", "342", false),
+    FilterOption("Villainess", "343", false),
+    FilterOption("Tanks", "344", false),
+    FilterOption("Band", "345", false),
+    FilterOption("Rock Music", "346", false),
+    FilterOption("Calligraphy", "347", false),
+    FilterOption("Anthology", "348", false),
+    FilterOption("Arranged Marriage", "349", false),
+    FilterOption("Dancing", "350", false),
+    FilterOption("Office Lady", "351", false),
+    FilterOption("Camping", "352", false),
+    FilterOption("Writing", "353", false),
+    FilterOption("Prison", "354", false),
+    FilterOption("Eco-Horror", "355", false),
+    FilterOption("Body Image", "356", false),
+    FilterOption("Poker", "357", false),
+    FilterOption("Matriarchy", "358", false),
+    FilterOption("Primarily Animal Cast", "359", false),
+    FilterOption("Ice Skating", "360", false),
+    FilterOption("Achromatic", "361", false),
+    FilterOption("Autobiographical", "362", false),
+    FilterOption("Hypersexuality", "363", false),
+    FilterOption("Pregnancy", "364", false),
+    FilterOption("Swimming", "365", false),
+    FilterOption("CGI", "366", false),
+    FilterOption("Ballet", "367", false),
+    FilterOption("Blackmail", "368", false),
+    FilterOption("Armpits", "369", false),
+    FilterOption("Exhibitionism", "370", false),
+    FilterOption("Rimjob", "371", false),
+    FilterOption("Fingering", "372", false),
+    FilterOption("DILF", "373", false),
+    FilterOption("Cheating", "374", false),
+    FilterOption("Watersports", "375", false),
+    FilterOption("Amputation", "376", false),
+    FilterOption("Scissoring", "377", false),
+    FilterOption("Feet", "378", false),
+    FilterOption("Irrumatio", "379", false),
+    FilterOption("Flat Chest", "380", false),
+    FilterOption("Tentacles", "381", false),
+    FilterOption("Reverse Isekai", "382", false),
+    FilterOption("Classic Literature", "383", false),
+    FilterOption("Inn", "384", false),
+    FilterOption("Oyakodon", "385", false),
+    FilterOption("Creature Taming", "386", false),
+    FilterOption("Musical Theater", "387", false),
+    FilterOption("Classical Music", "388", false),
+    FilterOption("Elderly Protagonist", "389", false),
+    FilterOption("Proxy Battle", "390", false),
+    FilterOption("Vocal Synth", "391", false),
+    FilterOption("Mahjong", "392", false),
 )
