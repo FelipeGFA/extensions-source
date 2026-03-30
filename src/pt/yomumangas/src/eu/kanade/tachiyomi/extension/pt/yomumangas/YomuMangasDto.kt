@@ -12,112 +12,174 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.TimeZone
 
 @Serializable
-data class YomuMangasHomeDto(
-    val updates: List<YomuMangasSeriesDto> = emptyList(),
-    val votes: List<YomuMangasSeriesDto> = emptyList(),
-)
-
-@Serializable
-data class YomuMangasSearchDto(
-    val mangas: List<YomuMangasSeriesDto> = emptyList(),
-    val page: Int,
-    val pages: Int,
+class YomuMangasSearchDto(
+    val mangas: List<YomuMangasMangaDto> = emptyList(),
+    val page: Int = 0,
+    val pages: Int = 0,
 ) {
-
     val hasNextPage: Boolean
         get() = page < pages
 }
 
 @Serializable
-data class YomuMangasDetailsDto(val manga: YomuMangasSeriesDto)
+class YomuMangasDetailsDto(
+    val manga: YomuMangasMangaDto,
+)
 
 @Serializable
-data class YomuMangasSeriesDto(
+class YomuMangasMangaDto(
     val id: Int,
     val slug: String,
     val title: String,
     val cover: String? = null,
-    val status: String,
-    val authors: List<String>? = emptyList(),
-    val artists: List<String>? = emptyList(),
-    @Serializable(with = YomuMangasGenreDtoSerializer::class)
-    val genres: List<YomuMangasGenreDto>? = emptyList(),
+    val status: String = "",
+    val authors: List<String> = emptyList(),
+    val artists: List<String> = emptyList(),
+    @Serializable(with = GenreListSerializer::class)
+    val genres: List<YomuMangasFilterValueDto> = emptyList(),
+    @Serializable(with = TagListSerializer::class)
+    val tags: List<YomuMangasFilterValueDto> = emptyList(),
     val description: String? = null,
 ) {
 
-    val genre: String?
-        get() = genres
-            ?.filter { it.name.equals("unknown").not() }
-            ?.joinToString { it.name }
-
     fun toSManga(): SManga = SManga.create().apply {
-        title = this@YomuMangasSeriesDto.title
-        author = authors.orEmpty().joinToString { it.trim() }
-        artist = artists.orEmpty().joinToString { it.trim() }
-        genre = this@YomuMangasSeriesDto.genre
-        description = this@YomuMangasSeriesDto.description?.trim()
-        status = when (this@YomuMangasSeriesDto.status) {
+        title = this@YomuMangasMangaDto.title
+        author = authors.joinedOrNull()
+        artist = artists.joinedOrNull()
+        genre = (genres + tags)
+            .map(YomuMangasFilterValueDto::name)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString()
+            .ifBlank { null }
+        description = this@YomuMangasMangaDto.description
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+        status = when (this@YomuMangasMangaDto.status) {
             "ONGOING" -> SManga.ONGOING
             "COMPLETE" -> SManga.COMPLETED
-            "HIATUS" -> SManga.ON_HIATUS
+            "HIATUS", "ONHOLD" -> SManga.ON_HIATUS
             "CANCELLED" -> SManga.CANCELLED
-            "PLANNED" -> SManga.PUBLISHING_FINISHED
+            "ARCHIVED" -> SManga.PUBLISHING_FINISHED
             else -> SManga.UNKNOWN
         }
-        thumbnail_url = cover?.let { "${YomuMangas.CDN_URL}/images/${it.substringAfter("//")}" }
-        url = "/mangas/$id/$slug"
+        thumbnail_url = YomuMangas.toImageUrl(cover)
+        url = YomuMangas.mangaUrl(id, slug)
     }
 }
 
 @Serializable
-data class YomuMangasGenreDto(val name: String)
-
-private object YomuMangasGenreDtoSerializer : JsonTransformingSerializer<List<YomuMangasGenreDto>>(
-    ListSerializer(YomuMangasGenreDto.serializer()),
-) {
-    override fun transformDeserialize(element: JsonElement): JsonElement = JsonArray(
-        element.jsonArray.map { jsonElement ->
-            jsonElement.takeIf { it.isObject } ?: buildJsonObject {
-                genresList.firstOrNull { it.id.equals(jsonElement.jsonPrimitive.intOrNull) }?.let {
-                    put("name", JsonPrimitive(it.name))
-                } ?: put("name", JsonPrimitive("unknown"))
-            }
-        },
-    )
-
-    private val JsonElement.isObject get() = this is JsonObject
-}
-
-@Serializable
-data class YomuMangasChaptersDto(val chapters: List<YomuMangasChapterDto> = emptyList())
-
-@Serializable
-data class YomuMangasChapterDto(
+class YomuMangasFilterValueDto(
     val id: Int,
-    val chapter: Float,
-    @SerialName("uploaded_at") val uploadedAt: String,
-    val images: List<YomuMangasImageDto>? = emptyList(),
+    val name: String,
+)
+
+@Serializable
+class YomuMangasChaptersDto(
+    val chapters: List<YomuMangasChapterDto> = emptyList(),
+    val scans: List<YomuMangasScanDto> = emptyList(),
+)
+
+@Serializable
+class YomuMangasChapterDto(
+    val id: Int,
+    val chapter: String,
+    val volume: Int? = null,
+    val title: String? = null,
+    @SerialName("uploaded_at") val uploadedAt: String? = null,
+    val extra: Boolean = false,
+    val scans: List<Int> = emptyList(),
 ) {
 
-    fun toSChapter(series: YomuMangasSeriesDto): SChapter = SChapter.create().apply {
-        name = "Capítulo ${chapter.toString().removeSuffix(".0")}"
-        date_upload = DATE_FORMATTER.tryParse(uploadedAt)
-        url = "/mangas/${series.id}/${series.slug}/$chapter"
+    fun toSChapter(
+        mangaId: Int,
+        slug: String,
+        scansById: Map<Int, YomuMangasScanDto>,
+    ): SChapter = SChapter.create().apply {
+        val chapterLabel = chapter.removeSuffix(".0")
+        name = buildList {
+            add(
+                buildString {
+                    volume?.let {
+                        append("Vol. ")
+                        append(it)
+                        append(' ')
+                    }
+                    append(if (extra) "Extra" else "Capi­tulo $chapterLabel")
+                },
+            )
+            title?.trim()?.takeIf(String::isNotBlank)?.let(::add)
+        }.joinToString(" - ")
+        chapter_number = chapter.toFloatOrNull() ?: -1f
+        scanlator = scans.mapNotNull { scansById[it]?.name }
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString()
+            .ifBlank { null }
+        date_upload = uploadedAt?.let { DATE_FORMATTER.tryParse(it) } ?: 0L
+        url = YomuMangas.mangaUrl(mangaId, slug, chapter)
     }
 
     companion object {
         private val DATE_FORMATTER by lazy {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
         }
     }
 }
 
 @Serializable
-data class YomuMangasImageDto(val uri: String)
+class YomuMangasScanDto(
+    val id: Int,
+    val name: String,
+)
+
+private object GenreListSerializer : JsonTransformingSerializer<List<YomuMangasFilterValueDto>>(
+    ListSerializer(YomuMangasFilterValueDto.serializer()),
+) {
+    override fun transformDeserialize(element: JsonElement): JsonElement = normalizeList(element, genreOptions)
+}
+
+private object TagListSerializer : JsonTransformingSerializer<List<YomuMangasFilterValueDto>>(
+    ListSerializer(YomuMangasFilterValueDto.serializer()),
+) {
+    override fun transformDeserialize(element: JsonElement): JsonElement = normalizeList(element, tagOptions)
+}
+
+private fun normalizeList(
+    element: JsonElement,
+    options: List<FilterOption>,
+): JsonElement = JsonArray(
+    element.jsonArray.map { item ->
+        if (item is JsonObject) {
+            buildJsonObject {
+                put("id", item["id"] ?: JsonPrimitive(-1))
+                put("name", item["name"] ?: JsonPrimitive(""))
+            }
+        } else {
+            val id = item.jsonPrimitive.int
+            val option = options.firstOrNull { it.id == id.toString() } ?: FilterOption("Unknown", id.toString())
+            buildJsonObject {
+                put("id", JsonPrimitive(id))
+                put("name", JsonPrimitive(option.name.trim()))
+            }
+        }
+    },
+)
+
+private fun List<String>.joinedOrNull(): String? = map(String::trim)
+    .filter(String::isNotBlank)
+    .distinct()
+    .joinToString()
+    .ifBlank { null }
