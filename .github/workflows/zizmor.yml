@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   zizmor:
+    if: false  # Desabilitado - específico do Keiyoushi
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -24,4 +25,4 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        uses: zizmorcore/zizmor-action@135698455da5c3b3e55f73f4419e481ab68cdd95 # v0.4.1

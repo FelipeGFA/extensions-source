@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   lock:
+    if: false  # Desabilitado - específico do Keiyoushi
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -1,0 +1,111 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sync-branch:
+    name: Sync branch with upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout sync branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: sync
+          fetch-depth: 0
+          token: ${{ secrets.BOT_PAT }}
+          persist-credentials: true
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/keiyoushi/extensions-source.git || true
+          git fetch upstream main
+
+      - name: Reset sync to upstream/main
+        run: |
+          git reset --hard upstream/main
+          git push origin sync --force
+
+  merge-main:
+    name: Merge upstream into main
+    needs: sync-branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.BOT_PAT }}
+          persist-credentials: true
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch sync branch
+        run: git fetch origin sync
+
+      - name: Check for changes
+        id: check
+        run: |
+          # Check for changes excluding .github folder
+          if git diff --quiet HEAD origin/sync -- ':!.github'; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes to sync (excluding .github)"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected, proceeding with merge"
+          fi
+
+      - name: Merge upstream (ignoring .github changes)
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          # Backup our .github folder
+          echo "Backing up local .github folder..."
+          cp -r .github /tmp/.github_backup
+          
+          # Attempt merge with strategy that prefers our .github
+          # Use -X theirs for auto-resolution, we'll restore .github after
+          if ! git merge origin/sync -m "chore: sync with upstream" --no-edit -X theirs; then
+            echo "Merge has conflicts, resolving automatically..."
+            
+            # For any remaining conflicts, accept theirs (upstream) 
+            # We'll restore our .github folder afterward anyway
+            git checkout --theirs . 2>/dev/null || true
+            git add -A
+            git commit -m "chore: sync with upstream (auto-resolved)" || true
+          fi
+          
+          # Restore our .github folder completely (ignore ALL upstream .github changes)
+          echo "Restoring local .github folder (ignoring upstream changes)..."
+          rm -rf .github
+          cp -r /tmp/.github_backup .github
+          
+          # Stage .github changes if any
+          git add .github
+          
+          # Amend commit if .github was changed, or create new commit
+          if ! git diff --cached --quiet .github; then
+            git commit --amend --no-edit || git commit -m "chore: preserve local .github folder"
+          fi
+          
+          echo "Merge completed. Local .github folder preserved."
+
+      - name: Push changes
+        if: steps.check.outputs.has_changes == 'true'
+        run: git push origin main
