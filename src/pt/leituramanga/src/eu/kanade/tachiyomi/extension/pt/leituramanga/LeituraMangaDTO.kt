@@ -101,14 +101,3 @@ class MangaInfoDto(
     val mangaSlug: String,
     val mangaId: String,
 )
-
-@Serializable
-class PageInfoDto(
-    val id: String,
-    val mangaSlug: String,
-)
-
-@Serializable
-class EncryptedContent(
-    val payload: String,
-)
