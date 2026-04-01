@@ -4,10 +4,13 @@ import android.util.Log
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.extractNextJs
 import keiyoushi.utils.extractNextJsRsc
-import keiyoushi.utils.parseAs
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -27,38 +30,69 @@ internal class PlumaComicsDrmHelper(private val baseUrl: String) {
         }
     }
 
-    fun extractTotalPages(document: Document, chapterId: String): Int {
-        val payloadPages = extractPagesFromNextJsPayload(document, chapterId)
+    fun extractReaderPayload(document: Document, chapterId: String): ChapterReaderPayload? {
+        val chapterPages = document.extractNextJs<ChapterPagesPayload> { element ->
+            element is JsonObject &&
+                element["id"]?.jsonPrimitive?.contentOrNull == CHAPTER_PAGES_ID
+        } ?: return null
+
+        val pageEntries = chapterPages.children
+            .mapNotNull { parsePageEntry(it, chapterId) }
             .distinct()
             .sorted()
+            .toList()
 
-        if (payloadPages.isNotEmpty()) return payloadPages.size
+        val chapterToken = pageEntries.firstNotNullOfOrNull { it.chapterToken?.takeIf(String::isNotBlank) }.orEmpty()
+        val baseSeed = pageEntries.firstNotNullOfOrNull { it.baseSeed?.takeIf(List<Int>::isNotEmpty) }
+            .orEmpty()
+        val pageNumbers = pageEntries.map { it.pageNumber }
 
+        if (pageNumbers.isEmpty() || chapterToken.isBlank() || baseSeed.isEmpty()) {
+            Log.d(
+                TAG,
+                "Reader payload missing data chapter=$chapterId pages=${pageNumbers.size} tokenLen=${chapterToken.length} baseSeed=${baseSeed.size}",
+            )
+            return null
+        }
+
+        return ChapterReaderPayload(
+            pageNumbers = pageNumbers,
+            token = chapterToken,
+            baseSeed = baseSeed,
+        )
+    }
+
+    fun extractTotalPages(document: Document, chapterId: String): Int {
         val pages = document.select("#chapter-pages canvas[aria-label]")
-        if (pages.isNotEmpty()) return pages.size
-
         val fallback = document.select("#chapter-pages > div")
-        if (fallback.isNotEmpty()) return fallback.size
+        val payloadTotal = extractReaderPayload(document, chapterId)?.pageNumbers?.maxOrNull() ?: 0
+        val totalPages = maxOf(payloadTotal, pages.size, fallback.size)
+
+        if (totalPages > 0) return totalPages
 
         throw IllegalStateException("Could not extract total pages from chapter document")
     }
 
-    private fun extractPagesFromNextJsPayload(document: Document, chapterId: String): List<Int> {
-        val chapterItems = document.extractNextJs<JsonArray>(::isChapterItemArray) ?: return emptyList()
+    private fun parsePageEntry(element: JsonElement, chapterId: String): ChapterPageEntry? {
+        val props = runCatching {
+            element.jsonArray.getOrNull(3)?.jsonObject
+        }.getOrNull() ?: return null
 
-        return chapterItems.mapNotNull { item ->
-            val itemArray = item as? JsonArray ?: return@mapNotNull null
-            val data = itemArray.getOrNull(3) ?: return@mapNotNull null
-            val page = runCatching { data.parseAs<ChapterPageDto>() }.getOrNull() ?: return@mapNotNull null
-            if (page.chapterId.toString() != chapterId) return@mapNotNull null
-            page.pageNumber
-        }
-    }
+        if (props["chapterId"]?.jsonPrimitive?.contentOrNull != chapterId) return null
 
-    private fun isChapterItemArray(element: JsonElement): Boolean {
-        if (element !is JsonArray || element.isEmpty()) return false
-        val first = element.firstOrNull() as? JsonArray ?: return false
-        return first.size > 3
+        val pageNumber = props["pageNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return null
+        val chapterToken = props["chapterToken"]?.jsonPrimitive?.contentOrNull
+        val baseSeed = runCatching {
+            props["baseSeed"]?.jsonArray
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull?.toIntOrNull() }
+                ?.takeIf { it.isNotEmpty() }
+        }.getOrNull()
+
+        return ChapterPageEntry(
+            pageNumber = pageNumber,
+            chapterToken = chapterToken,
+            baseSeed = baseSeed,
+        )
     }
 
     fun requestReaderSession(
@@ -110,13 +144,14 @@ internal class PlumaComicsDrmHelper(private val baseUrl: String) {
 
     fun buildPageImageUrl(chapterId: String, pageNumber: Int): String = "$baseUrl/api/read/$chapterId/$pageNumber"
 
-    fun decryptImageHeader(encryptedBytes: ByteArray, baseSeed: List<Int>): ByteArray {
+    fun decryptImageBytes(encryptedBytes: ByteArray, baseSeed: List<Int>): ByteArray {
         if (encryptedBytes.isEmpty() || baseSeed.isEmpty()) return encryptedBytes
 
         val result = encryptedBytes.copyOf()
         val seedSize = baseSeed.size
         val limit = minOf(result.size, HEADER_DECRYPT_LIMIT)
 
+        // The WASM decrypts the payload in place but only mutates the first min(dataLen, 1024) bytes.
         for (i in 0 until limit) {
             val seedByte = baseSeed[i % seedSize] and 0xFF
             val derivedKeyByte = ((seedByte xor SEED_XOR_KEY) - ((i % seedSize) * SEED_INDEX_MULTIPLIER)) and 0xFF
@@ -168,25 +203,47 @@ internal class PlumaComicsDrmHelper(private val baseUrl: String) {
         val baseSeed: List<Int>,
     )
 
-    @Serializable
-    private class ChapterPageDto(
-        val chapterId: Int,
-        val pageNumber: Int,
-    )
-
-    @Serializable
     companion object {
         private const val TAG = "PlumaComics"
         private val NUMBER_REGEX = """-?\d+""".toRegex()
         private val NEXT_ACTION_REGEX =
             """(?:createServerReference\s*\(|createServerReference\)\()\s*['\"]([a-zA-Z0-9]{30,})['\"][\s\S]{0,300}?['\"]requestImageToken['\"]""".toRegex()
+        private const val CHAPTER_PAGES_ID = "chapter-pages"
         private const val HEADER_DECRYPT_LIMIT = 1024
         private const val SEED_XOR_KEY = 75
         private const val SEED_INDEX_MULTIPLIER = 3
     }
 }
 
+internal class ChapterReaderPayload(
+    val pageNumbers: List<Int>,
+    val token: String,
+    val baseSeed: List<Int>,
+)
+
 internal class ReaderSession(
     val token: String,
     val baseSeed: List<Int>,
+)
+
+private class ChapterPageEntry(
+    val pageNumber: Int,
+    val chapterToken: String?,
+    val baseSeed: List<Int>?,
+) : Comparable<ChapterPageEntry> {
+    override fun compareTo(other: ChapterPageEntry): Int = pageNumber.compareTo(other.pageNumber)
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ChapterPageEntry) return false
+        return pageNumber == other.pageNumber
+    }
+
+    override fun hashCode(): Int = pageNumber
+}
+
+@Serializable
+private class ChapterPagesPayload(
+    val id: String,
+    val children: List<JsonElement>,
 )

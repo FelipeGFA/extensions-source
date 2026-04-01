@@ -13,14 +13,16 @@ import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.parseAs
 import kotlinx.serialization.Serializable
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import java.util.concurrent.ConcurrentHashMap
 
 class PlumaComics : HttpSource() {
 
     private val drmHelper by lazy { PlumaComicsDrmHelper(baseUrl) }
-    private val readerSessionByPage = mutableMapOf<String, ReaderSession>()
+    private val readerSessionByPage = ConcurrentHashMap<String, ReaderSession>()
 
     @Volatile
     private var nextActionId: String? = null
@@ -68,11 +70,11 @@ class PlumaComics : HttpSource() {
             Log.d(TAG, "Image response key=$sessionKey code=${response.code} type=${responseBody.contentType()} size=${encryptedBytes.size}")
             Log.d(TAG, "Image encrypted head=${encryptedBytes.take(8).joinToString(" ") { "%02x".format(it.toInt() and 0xFF) }}")
 
-            val decrypted = drmHelper.decryptImageHeader(encryptedBytes, session.baseSeed)
+            val decrypted = drmHelper.decryptImageBytes(encryptedBytes, session.baseSeed)
             Log.d(TAG, "Image decrypted head=${decrypted.take(8).joinToString(" ") { "%02x".format(it.toInt() and 0xFF) }}")
 
             response.newBuilder()
-                .body(decrypted.toResponseBody(responseBody.contentType()))
+                .body(decrypted.toResponseBody("image/jpeg".toMediaType()))
                 .build()
         }
         .build()
@@ -166,15 +168,29 @@ class PlumaComics : HttpSource() {
     override fun pageListParse(response: Response): List<Page> {
         val document = drmHelper.parseChapterDocument(response)
         val chapterUrl = document.location()
-
         val chapterId = drmHelper.extractChapterId(chapterUrl)
-
-        val resolvedNextAction = nextActionId
-            ?: drmHelper.resolveNextActionId(client, document, chapterUrl).also { nextActionId = it }
-
+        val payload = drmHelper.extractReaderPayload(document, chapterId)
         val totalPages = drmHelper.extractTotalPages(document, chapterId)
+        val pageNumbers = (1..totalPages).toList()
 
-        return (1..totalPages).mapIndexed { index, pageNumber ->
+        payload?.let {
+            val sharedSession = ReaderSession(token = it.token, baseSeed = it.baseSeed)
+            pageNumbers.forEach { pageNumber ->
+                readerSessionByPage["$chapterId/$pageNumber"] = sharedSession
+            }
+            Log.d(
+                TAG,
+                "Shared reader session chapter=$chapterId payloadPages=${it.pageNumbers.size} totalPages=$totalPages tokenLen=${it.token.length} baseSeed=${it.baseSeed.size}",
+            )
+        }
+
+        val resolvedNextAction = if (payload == null) {
+            nextActionId ?: drmHelper.resolveNextActionId(client, document, chapterUrl).also { nextActionId = it }
+        } else {
+            null
+        }
+
+        return pageNumbers.mapIndexed { index, pageNumber ->
             val sessionKey = "$chapterId/$pageNumber"
             val session = readerSessionByPage[sessionKey]
                 ?: drmHelper.requestReaderSession(
@@ -182,10 +198,11 @@ class PlumaComics : HttpSource() {
                     chapterUrl = chapterUrl,
                     chapterId = chapterId,
                     page = pageNumber.toString(),
-                    nextActionId = resolvedNextAction,
+                    nextActionId = resolvedNextAction
+                        ?: throw IllegalStateException("Missing next-action id for fallback session request"),
                 ).also {
                     readerSessionByPage[sessionKey] = it
-                    Log.d(TAG, "Session created key=$sessionKey tokenLen=${it.token.length} baseSeed=${it.baseSeed.size}")
+                    Log.d(TAG, "Fallback session created key=$sessionKey tokenLen=${it.token.length} baseSeed=${it.baseSeed.size}")
                 }
 
             Log.d(TAG, "Page mapped idx=$index page=$pageNumber key=$sessionKey tokenLen=${session.token.length}")
