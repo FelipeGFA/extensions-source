@@ -4,10 +4,6 @@ import kotlin.math.ln
 import kotlin.math.pow
 
 /**
- * Various utility methods used in the E-Hentai source
- */
-
-/**
  * Return null if String is blank, otherwise returns the original String
  * @returns null if the String is blank, otherwise returns the original String
  */
@@ -20,12 +16,10 @@ fun String?.nullIfBlank(): String? = if (isNullOrBlank()) {
 /**
  * Ignores any exceptions thrown inside a block
  */
-fun <T> ignore(expr: () -> T): T? {
-    return try {
-        expr()
-    } catch (t: Throwable) {
-        null
-    }
+fun <T> ignore(expr: () -> T): T? = try {
+    expr()
+} catch (t: Throwable) {
+    null
 }
 
 /**

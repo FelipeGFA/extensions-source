@@ -34,7 +34,7 @@ class Hentai2Read : ParsedHttpSource() {
     override val client: OkHttpClient = network.cloudflareClient
 
     companion object {
-        const val imageBaseUrl = "https://static.hentaicdn.com/hentai"
+        const val IMAGE_BASE_URL = "https://static.hentaicdn.com/hentai"
 
         const val PREFIX_ID_SEARCH = "id:"
 
@@ -49,19 +49,15 @@ class Hentai2Read : ParsedHttpSource() {
 
     override fun latestUpdatesSelector() = popularMangaSelector()
 
-    override fun popularMangaRequest(page: Int) =
-        GET("$baseUrl/hentai-list/all/any/all/most-popular/$page/", headers)
+    override fun popularMangaRequest(page: Int) = GET("$baseUrl/hentai-list/all/any/all/most-popular/$page/", headers)
 
-    override fun latestUpdatesRequest(page: Int) =
-        GET("$baseUrl/hentai-list/all/any/all/last-updated/$page/", headers)
+    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/hentai-list/all/any/all/last-updated/$page/", headers)
 
-    override fun popularMangaFromElement(element: Element): SManga {
-        return SManga.create().apply {
-            thumbnail_url = element.select("img").attr("abs:src")
-            element.select("div.overlay-title a").let {
-                title = it.text()
-                setUrlWithoutDomain(it.attr("href"))
-            }
+    override fun popularMangaFromElement(element: Element): SManga = SManga.create().apply {
+        thumbnail_url = element.select("img").attr("abs:src")
+        element.select("div.overlay-title a").let {
+            title = it.text()
+            setUrlWithoutDomain(it.attr("href"))
         }
     }
 
@@ -71,16 +67,14 @@ class Hentai2Read : ParsedHttpSource() {
 
     override fun latestUpdatesNextPageSelector() = popularMangaNextPageSelector()
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_ID_SEARCH)) {
-            val id = query.removePrefix(PREFIX_ID_SEARCH)
-            client.newCall(GET("$baseUrl/$id/", headers)).asObservableSuccess()
-                .map { MangasPage(listOf(mangaDetailsParse(it).apply { url = "/$id/" }), false) }
-        } else {
-            val search = requestSearch(page, query, filters)
-            client.newCall(search.first).asObservableSuccess()
-                .map { parseSearch(it, page, search.second) }
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_ID_SEARCH)) {
+        val id = query.removePrefix(PREFIX_ID_SEARCH)
+        client.newCall(GET("$baseUrl/$id/", headers)).asObservableSuccess()
+            .map { MangasPage(listOf(mangaDetailsParse(it).apply { url = "/$id/" }), false) }
+    } else {
+        val search = requestSearch(page, query, filters)
+        client.newCall(search.first).asObservableSuccess()
+            .map { parseSearch(it, page, search.second) }
     }
 
     private fun requestSearch(page: Int, query: String, filters: FilterList): Pair<Request, String?> {
@@ -147,9 +141,7 @@ class Hentai2Read : ParsedHttpSource() {
 
     override fun searchMangaSelector() = popularMangaSelector()
 
-    override fun searchMangaFromElement(element: Element): SManga {
-        return popularMangaFromElement(element)
-    }
+    override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     override fun searchMangaNextPageSelector() = popularMangaNextPageSelector()
 
@@ -206,14 +198,12 @@ class Hentai2Read : ParsedHttpSource() {
 
     override fun chapterListSelector() = "ul.nav-chapters > li > div.media > a"
 
-    override fun chapterFromElement(element: Element): SChapter {
-        return SChapter.create().apply {
-            setUrlWithoutDomain(element.attr("href"))
-            val time = element.select("div > small").text().substringAfter("about").substringBefore("ago")
-            name = element.ownText().trim()
-            if (time != "") {
-                date_upload = parseChapterDate(time)
-            }
+    override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
+        setUrlWithoutDomain(element.attr("href"))
+        val time = element.select("div > small").text().substringAfter("about").substringBefore("ago")
+        name = element.ownText().trim()
+        if (time != "") {
+            date_upload = parseChapterDate(time)
         }
     }
 
@@ -254,7 +244,7 @@ class Hentai2Read : ParsedHttpSource() {
         var i = 0
         while (m.find()) {
             m.group(1)?.split(",")?.forEach {
-                pages.add(Page(i++, "", imageBaseUrl + it.trim('"').replace("""\/""", "/")))
+                pages.add(Page(i++, "", IMAGE_BASE_URL + it.trim('"').replace("""\/""", "/")))
             }
         }
         return pages
@@ -276,8 +266,7 @@ class Hentai2Read : ParsedHttpSource() {
     private class Tag(name: String, val id: Int) : Filter.TriState(name)
     private class TagList(title: String, tags: List<Tag>) : Filter.Group<Tag>(title, tags)
     private class SortOrder(values: Array<Pair<String, String?>>) : UriPartFilter("Order", values)
-    private open class UriPartFilter(displayName: String, val vals: Array<Pair<String, String?>>) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+    private open class UriPartFilter(displayName: String, val vals: Array<Pair<String, String?>>) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
         fun toUriPart() = vals.getOrNull(state)?.second
     }
 
