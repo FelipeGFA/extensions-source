@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.pt.plumacomics
 
-import android.util.Log
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -22,10 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
 class PlumaComics : HttpSource() {
 
     private val drmHelper by lazy { PlumaComicsDrmHelper(baseUrl) }
-    private val readerSessionByPage = ConcurrentHashMap<String, ReaderSession>()
-
-    @Volatile
-    private var nextActionId: String? = null
+    private val chapterTokenById = ConcurrentHashMap<String, String>()
 
     override val name: String = "Pluma Comics"
 
@@ -56,22 +52,12 @@ class PlumaComics : HttpSource() {
                 return@addInterceptor response
             }
 
-            val chapterId = requestWithHeaders.url.pathSegments.getOrNull(2)
-                ?: return@addInterceptor response
-            val pageNumber = requestWithHeaders.url.pathSegments.getOrNull(3)
-                ?: return@addInterceptor response
-            val sessionKey = "$chapterId/$pageNumber"
-            val session = readerSessionByPage[sessionKey]
-                ?: return@addInterceptor response.also {
-                    Log.w(TAG, "Missing session for image key=$sessionKey")
-                }
+            if (!response.isSuccessful) {
+                return@addInterceptor response
+            }
             val responseBody = response.body
             val encryptedBytes = responseBody.bytes()
-            Log.d(TAG, "Image response key=$sessionKey code=${response.code} type=${responseBody.contentType()} size=${encryptedBytes.size}")
-            Log.d(TAG, "Image encrypted head=${encryptedBytes.take(8).joinToString(" ") { "%02x".format(it.toInt() and 0xFF) }}")
-
-            val decrypted = drmHelper.decryptImageBytes(encryptedBytes, session.baseSeed)
-            Log.d(TAG, "Image decrypted head=${decrypted.take(8).joinToString(" ") { "%02x".format(it.toInt() and 0xFF) }}")
+            val decrypted = PlumaImageDecrypt.decryptImageBytes(encryptedBytes)
 
             response.newBuilder()
                 .body(decrypted.toResponseBody("image/jpeg".toMediaType()))
@@ -166,47 +152,14 @@ class PlumaComics : HttpSource() {
     // Pages
 
     override fun pageListParse(response: Response): List<Page> {
-        val document = drmHelper.parseChapterDocument(response)
+        val document = response.asJsoup()
         val chapterUrl = document.location()
         val chapterId = drmHelper.extractChapterId(chapterUrl)
         val payload = drmHelper.extractReaderPayload(document, chapterId)
-        val totalPages = drmHelper.extractTotalPages(document, chapterId)
-        val pageNumbers = (1..totalPages).toList()
+            ?: throw IllegalStateException("Missing reader payload")
+        chapterTokenById[chapterId] = payload.token
 
-        payload?.let {
-            val sharedSession = ReaderSession(token = it.token, baseSeed = it.baseSeed)
-            pageNumbers.forEach { pageNumber ->
-                readerSessionByPage["$chapterId/$pageNumber"] = sharedSession
-            }
-            Log.d(
-                TAG,
-                "Shared reader session chapter=$chapterId payloadPages=${it.pageNumbers.size} totalPages=$totalPages tokenLen=${it.token.length} baseSeed=${it.baseSeed.size}",
-            )
-        }
-
-        val resolvedNextAction = if (payload == null) {
-            nextActionId ?: drmHelper.resolveNextActionId(client, document, chapterUrl).also { nextActionId = it }
-        } else {
-            null
-        }
-
-        return pageNumbers.mapIndexed { index, pageNumber ->
-            val sessionKey = "$chapterId/$pageNumber"
-            val session = readerSessionByPage[sessionKey]
-                ?: drmHelper.requestReaderSession(
-                    client = client,
-                    chapterUrl = chapterUrl,
-                    chapterId = chapterId,
-                    page = pageNumber.toString(),
-                    nextActionId = resolvedNextAction
-                        ?: throw IllegalStateException("Missing next-action id for fallback session request"),
-                ).also {
-                    readerSessionByPage[sessionKey] = it
-                    Log.d(TAG, "Fallback session created key=$sessionKey tokenLen=${it.token.length} baseSeed=${it.baseSeed.size}")
-                }
-
-            Log.d(TAG, "Page mapped idx=$index page=$pageNumber key=$sessionKey tokenLen=${session.token.length}")
-
+        return payload.pageNumbers.mapIndexed { index, pageNumber ->
             Page(index, chapterUrl, drmHelper.buildPageImageUrl(chapterId, pageNumber))
         }
     }
@@ -229,21 +182,14 @@ class PlumaComics : HttpSource() {
 
     override fun imageRequest(page: Page): Request {
         val imageUrl = page.imageUrl ?: throw IllegalStateException("Missing image URL")
-        val chapterId = imageUrl.toHttpUrl().pathSegments.getOrNull(2)
-            ?: throw IllegalStateException("Could not extract chapter id from image URL")
-        val pageNumber = imageUrl.toHttpUrl().pathSegments.getOrNull(3)
-            ?: throw IllegalStateException("Could not extract page number from image URL")
-        val sessionKey = "$chapterId/$pageNumber"
-        val session = readerSessionByPage[sessionKey]
-            ?: throw IllegalStateException("Missing reader session for page $sessionKey")
+        val chapterId = imageUrl.toHttpUrl().pathSegments.getOrNull(2) ?: throw IllegalStateException("Missing chapter id")
+        val token = chapterTokenById[chapterId] ?: throw IllegalStateException("Missing chapter token")
 
         val imageHeaders = headers.newBuilder()
             .set("Referer", page.url)
-            .set("X-Pluma-Token", session.token)
+            .set("X-Pluma-Token", token)
             .set("Accept-Encoding", "identity")
             .build()
-
-        Log.d(TAG, "Image request url=$imageUrl key=$sessionKey tokenLen=${session.token.length}")
 
         return GET(imageUrl, imageHeaders)
     }
@@ -261,8 +207,4 @@ class PlumaComics : HttpSource() {
         val slug: String,
         val coverPath: String,
     )
-
-    companion object {
-        private const val TAG = "PlumaComics"
-    }
 }
