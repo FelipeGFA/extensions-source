@@ -237,9 +237,12 @@ class NexusScan :
     override fun pageListParse(response: Response): List<Page> {
         val readResponse = response.parseAs<ReadResponse>()
         return readResponse.pages
-            .sortedBy { it.pageNumber }
-            .mapIndexed { index, page ->
-                Page(index, imageUrl = page.imageUrl)
+            .mapIndexed { originalIndex, page ->
+                page.pageNumber to "$baseUrl/api/p/${readResponse.pageToken}/$originalIndex"
+            }
+            .sortedBy { it.first }
+            .mapIndexed { index, (_, imageUrl) ->
+                Page(index, imageUrl = imageUrl)
             }
     }
 

@@ -59,12 +59,12 @@ class ChapterDto(
 
 @Serializable
 class ReadResponse(
-    val pages: List<PageDto> = emptyList(),
+    val pageToken: String,
+    val pages: List<PageDto>,
 )
 
 @Serializable
 class PageDto(
-    val imageUrl: String,
     val pageNumber: Int,
 )
 
