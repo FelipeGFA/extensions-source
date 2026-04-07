@@ -4,7 +4,7 @@ import eu.kanade.tachiyomi.multisrc.greenshit.GreenShit
 
 class Vegitoons : GreenShit() {
     override val apiUrl = "https://api.vegitoons.black"
-    override val cdnUrl = "https://cdn.verdinha.wtf"
+    override val cdnUrl = "https://cdn.vegitoons.wtf"
     override val cdnApiUrl = "https://api.vegitoons.black/cdn"
     override val baseUrl = "https://vegitoons.black"
     override val lang = "pt-BR"
