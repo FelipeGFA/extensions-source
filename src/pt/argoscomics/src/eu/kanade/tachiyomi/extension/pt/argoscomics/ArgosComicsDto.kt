@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.pt.argoscomics
 
-import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
@@ -9,22 +8,26 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.TimeZone
 
 @Serializable
-class MangasListDto(
-    private val projects: List<MangaDto>,
-    private val pagination: PaginationDto,
-) {
-    fun toMangasPage() = MangasPage(projects.map(MangaDto::toSManga), pagination.hasNextPage)
+class HomeDto(
+    val lastUpdates: List<MangaDto>,
+)
 
+@Serializable
+class LoginResponseDto(
+    val user: LoginUserDto? = null,
+    val message: String? = null,
+) {
     @Serializable
-    class PaginationDto(
-        val hasNextPage: Boolean,
+    class LoginUserDto(
+        val id: String,
     )
 }
 
 @Serializable
-open class MangaDto(
+class MangaDto(
     private val id: String,
     private val title: String,
     @SerialName("cover_image")
@@ -37,7 +40,7 @@ open class MangaDto(
         this.title = this@MangaDto.title
         this.thumbnail_url = this@MangaDto.thumbnail
         this.url = "/${this@MangaDto.id}/${this@MangaDto.slug}"
-        this.status = when (this@MangaDto.status.lowercase()) {
+        this.status = when (this@MangaDto.status.lowercase(Locale.ROOT)) {
             "active", "up_to_date" -> SManga.ONGOING
             "hiatus" -> SManga.ON_HIATUS
             "finished" -> SManga.COMPLETED
@@ -45,6 +48,23 @@ open class MangaDto(
         }
     }
 }
+
+@Serializable
+class ProjectsPageDto(
+    val projects: List<MangaDto>,
+    val pagination: PaginationDto,
+    val name: String? = null,
+)
+
+@Serializable
+class PaginationDto(
+    val currentPage: Int,
+    val totalPages: Int,
+    val totalCount: Int,
+    val limit: Int,
+    val hasNextPage: Boolean,
+    val hasPreviousPage: Boolean,
+)
 
 @Serializable
 class MangaDetailsDto(
@@ -64,7 +84,7 @@ class MangaDetailsDto(
     fun toSManga() = SManga.create().apply {
         this.title = this@MangaDetailsDto.title
         this.thumbnail_url = this@MangaDetailsDto.thumbnail
-        this.status = when (this@MangaDetailsDto.status.lowercase()) {
+        this.status = when (this@MangaDetailsDto.status.lowercase(Locale.ROOT)) {
             "active", "up_to_date", "coming_soon" -> SManga.ONGOING
             "hiatus" -> SManga.ON_HIATUS
             "finished" -> SManga.COMPLETED
@@ -100,23 +120,29 @@ class VolumeChapterDto(
 
     @Serializable
     class ChapterDto(
-        val id: String,
         @SerialName("title")
         val number: Float,
         @SerialName("created_at")
         val createdAt: String,
     )
 
-    fun toChapterList(pathSegment: String): List<SChapter> = volumes.flatMap(ChapterListDto::chapters).map {
-        SChapter.create().apply {
-            name = it.number.toString()
-            chapter_number = it.number
-            date_upload = DATE_FORMAT.tryParse(it.createdAt)
-            url = "$pathSegment/capitulo/$chapter_number"
+    fun toChapterList(pathSegment: String): List<SChapter> = volumes
+        .flatMap(ChapterListDto::chapters)
+        .map {
+            SChapter.create().apply {
+                name = formatChapterNumber(it.number)
+                chapter_number = it.number
+                date_upload = DATE_FORMAT.tryParse(it.createdAt)
+                url = "$pathSegment/capitulo/${formatChapterNumber(it.number)}"
+            }
         }
-    }
+
     companion object {
-        private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
+        private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+
+        private fun formatChapterNumber(number: Float): String = number.toString().removeSuffix(".0")
     }
 }
 
@@ -124,13 +150,16 @@ class VolumeChapterDto(
 class PagesDto(
     val pages: List<ImageDto>,
 ) {
-    fun toPageList(): List<Page> = pages.mapIndexed { index, image ->
-        Page(index, imageUrl = image.src)
-    }
+    fun toPageList(): List<Page> = pages
+        .sortedBy(ImageDto::pageNumber)
+        .mapIndexed { index, image ->
+            Page(index, imageUrl = image.src)
+        }
 
     @Serializable
     class ImageDto(
         @SerialName("photo")
         val src: String,
+        val pageNumber: Int,
     )
 }
