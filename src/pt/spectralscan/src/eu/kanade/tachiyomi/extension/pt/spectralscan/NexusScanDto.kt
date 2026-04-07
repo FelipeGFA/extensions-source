@@ -40,7 +40,7 @@ class MangaDetailsDto(
     val author: String? = null,
     val artist: String? = null,
     val status: String,
-    val categories: List<CategoryDto> = emptyList(),
+    val categories: List<CategoryDto>? = null,
     val chapters: List<ChapterDto>? = null,
 )
 
@@ -91,7 +91,7 @@ fun MangaDetailsDto.toSManga() = SManga.create().apply {
     author = this@toSManga.author
     artist = this@toSManga.artist
     status = this@toSManga.status.parseStatus()
-    genre = categories.joinToString { it.name }
+    genre = categories.orEmpty().joinToString { it.name }
 }
 
 fun ChapterDto.toSChapter(mangaSlug: String) = SChapter.create().apply {
@@ -101,7 +101,7 @@ fun ChapterDto.toSChapter(mangaSlug: String) = SChapter.create().apply {
     } else {
         "Capítulo ${number.removeSuffix(".0")}"
     }
-    date_upload = dateFormat.tryParse(createdAt.substringBefore("."))
+    date_upload = dateFormat.tryParse(createdAt.substringBefore(".").removeSuffix("Z"))
 }
 
 private fun String?.parseStatus() = when (this?.lowercase()) {
