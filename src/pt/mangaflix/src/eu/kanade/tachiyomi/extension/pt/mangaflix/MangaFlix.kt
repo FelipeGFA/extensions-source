@@ -26,7 +26,7 @@ class MangaFlix : HttpSource() {
 
     override val baseUrl = "https://mangaflix.net"
 
-    private val apiUrl = "https://api.mangaflix.net/v1"
+    private val apiUrl = "https://webapp-api.mangaflix.net/v1"
 
     override val lang = "pt-BR"
 
