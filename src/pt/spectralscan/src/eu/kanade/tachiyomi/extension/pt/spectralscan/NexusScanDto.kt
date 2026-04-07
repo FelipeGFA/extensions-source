@@ -60,7 +60,7 @@ class ChapterDto(
 @Serializable
 class ReadResponse(
     val pageToken: String,
-    val pages: List<PageDto>,
+    val pages: List<PageDto> = emptyList(),
 )
 
 @Serializable
@@ -91,7 +91,7 @@ fun MangaDetailsDto.toSManga() = SManga.create().apply {
     author = this@toSManga.author
     artist = this@toSManga.artist
     status = this@toSManga.status.parseStatus()
-    genre = categories.orEmpty().joinToString { it.name }
+    genre = categories?.joinToString { it.name }
 }
 
 fun ChapterDto.toSChapter(mangaSlug: String) = SChapter.create().apply {
