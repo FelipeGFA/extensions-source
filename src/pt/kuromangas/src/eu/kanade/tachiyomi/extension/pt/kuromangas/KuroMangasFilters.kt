@@ -11,16 +11,12 @@ class SortFilter(displayName: String, private val sortOptions: List<Pair<String,
     val selectedSort: String
         get() = sortOptions.getOrNull(state)?.second ?: "average_rating"
     val selectedOrder: String
-        get() = when (state) {
-            1 -> "ASC"
-            2 -> "ASC"
-            else -> "DESC"
-        }
+        get() = if (state in 1..2) "ASC" else "DESC"
 }
 
 private fun getSortOptions() = listOf(
-    Pair("Melhor Avaliados", "average_rating"),
-    Pair("Mais Antigos", "created_at"),
-    Pair("Titulo (A-Z)", "title"),
-    Pair("Titulo (Z-A)", "title"),
+    "Melhor Avaliados" to "average_rating",
+    "Mais Antigos" to "created_at",
+    "Titulo (A-Z)" to "title",
+    "Titulo (Z-A)" to "title",
 )
