@@ -1,13 +1,5 @@
 package eu.kanade.tachiyomi.extension.pt.plumacomics
 
-import keiyoushi.utils.extractNextJs
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.jsoup.nodes.Document
 
@@ -20,69 +12,67 @@ internal class PlumaComicsDrmHelper(private val baseUrl: String) {
         }
     }
 
-    fun extractReaderPayload(document: Document, chapterId: String): ChapterReaderPayload? {
-        val chapterPages = document.extractNextJs<ChapterPagesPayload> { element ->
-            element is JsonObject &&
-                element["id"]?.jsonPrimitive?.contentOrNull == CHAPTER_PAGES_ID
-        } ?: return null
-
-        val pageEntries = chapterPages.children
-            .mapNotNull { parsePageEntry(it, chapterId) }
-            .distinct()
-            .sorted()
-
-        val token = pageEntries.firstNotNullOfOrNull { it.chapterToken?.takeIf(String::isNotBlank) } ?: return null
-        val pageNumbers = pageEntries.map { it.pageNumber }
-        if (pageNumbers.isEmpty()) return null
+    fun extractReaderPayload(document: Document): ChapterReaderPayload? {
+        val documentHtml = document.html().replace("\\\"", "\"")
+        val pages = document.select("#chapter-pages canvas[aria-label]")
+            .mapNotNull { it.attr("aria-label").toPageNumber() }
+            .groupingBy { it }
+            .eachCount()
+            .toSortedMap()
+            .map { (pageNumber, stripCount) ->
+                ChapterPageEntry(
+                    pageNumber = pageNumber,
+                    stripCount = stripCount,
+                )
+            }
+        val token = CHAPTER_TOKEN_REGEX.find(documentHtml)?.groupValues?.getOrNull(1) ?: return null
+        val baseSeed = BASE_SEED_REGEX.find(documentHtml)?.groupValues?.getOrNull(1)
+            ?.toBaseSeed()
+            ?: return null
+        if (pages.isEmpty()) return null
 
         return ChapterReaderPayload(
-            pageNumbers = pageNumbers,
+            pages = pages,
             token = token,
+            baseSeed = baseSeed,
         )
     }
 
     fun buildPageImageUrl(chapterId: String, pageNumber: Int): String = "$baseUrl/api/read/$chapterId/$pageNumber"
 
-    private fun parsePageEntry(element: JsonElement, chapterId: String): ChapterPageEntry? {
-        val props = runCatching { element.jsonArray.getOrNull(3)?.jsonObject }.getOrNull() ?: return null
-        if (props["chapterId"]?.jsonPrimitive?.contentOrNull != chapterId) return null
+    fun buildStripImageUrl(chapterId: String, pageNumber: Int, stripIndex: Int): String = "$baseUrl/api/read/$chapterId/$pageNumber/$stripIndex?v=2"
 
-        val pageNumber = props["pageNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return null
-        val chapterToken = props["chapterToken"]?.jsonPrimitive?.contentOrNull
+    private fun String.toPageNumber(): Int? = PAGE_NUMBER_REGEX.find(this)?.value?.toIntOrNull()
 
-        return ChapterPageEntry(
-            pageNumber = pageNumber,
-            chapterToken = chapterToken,
-        )
-    }
+    private fun String.toBaseSeed(): IntArray? = split(',')
+        .mapNotNull { it.trim().toIntOrNull() }
+        .takeIf { it.isNotEmpty() }
+        ?.toIntArray()
 
     private companion object {
-        private const val CHAPTER_PAGES_ID = "chapter-pages"
+        val PAGE_NUMBER_REGEX = Regex("""\d+""")
+        val CHAPTER_TOKEN_REGEX = Regex(""""chapterToken":"([^"]+)"""")
+        val BASE_SEED_REGEX = Regex(""""baseSeed":\[(.*?)]""")
     }
 }
 
-internal class ChapterReaderPayload(
-    val pageNumbers: List<Int>,
+internal data class ChapterReaderPayload(
+    val pages: List<ChapterPageEntry>,
     val token: String,
+    val baseSeed: IntArray,
 )
 
-private class ChapterPageEntry(
+internal data class ChapterPageEntry(
     val pageNumber: Int,
-    val chapterToken: String?,
-) : Comparable<ChapterPageEntry> {
-    override fun compareTo(other: ChapterPageEntry): Int = pageNumber.compareTo(other.pageNumber)
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is ChapterPageEntry) return false
-        return pageNumber == other.pageNumber
-    }
-
-    override fun hashCode(): Int = pageNumber
-}
-
-@Serializable
-private class ChapterPagesPayload(
-    val id: String,
-    val children: List<JsonElement>,
+    val stripCount: Int,
 )
+
+internal data class ChapterSession(
+    val token: String,
+    val baseSeed: IntArray,
+    val stripCountByPage: Map<Int, Int>,
+) {
+    fun requiresComposite(pageNumber: Int): Boolean = stripCount(pageNumber) > 0
+
+    fun stripCount(pageNumber: Int): Int = stripCountByPage[pageNumber] ?: 0
+}
