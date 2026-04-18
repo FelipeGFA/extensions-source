@@ -9,16 +9,15 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.extractNextJs
 import keiyoushi.utils.parseAs
-import kotlinx.serialization.Serializable
+import keiyoushi.utils.toJsonString
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import org.jsoup.nodes.Element
-import java.util.concurrent.ConcurrentHashMap
+import java.io.IOException
 
 class PlumaComics : HttpSource() {
 
@@ -46,8 +45,8 @@ class PlumaComics : HttpSource() {
         .set("Referer", "$baseUrl/")
 
     override val client = super.client.newBuilder()
-        .rateLimit(2)
-        .addInterceptor(::interceptReadImageRequest)
+        .rateLimit(3, 1)
+        .addInterceptor(ImageDecryptInterceptor())
         .build()
 
     // ==================== Popular ==========================
@@ -129,145 +128,21 @@ class PlumaComics : HttpSource() {
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        val chapterUrl = document.location()
-        val chapterId = drmHelper.extractChapterId(chapterUrl)
-        val payload = drmHelper.extractReaderPayload(document)
-            ?: throw IllegalStateException("Missing reader payload")
+        val chapter = document.extractNextJs<ChapterDto>() ?: throw IOException("Capítulo não encontrado")
 
-        chapterSessions[chapterId] = ChapterSession(
-            token = payload.token,
-            baseSeed = payload.baseSeed,
-            stripCountByPage = payload.pages.associate { it.pageNumber to it.stripCount },
-        )
-
-        return payload.pages.mapIndexed { index, page ->
-            Page(
-                index = index,
-                url = chapterUrl,
-                imageUrl = drmHelper.buildPageImageUrl(chapterId, page.pageNumber),
-            )
+        return List(document.select("#chapter-pages canvas").size) { index ->
+            Page(index, imageUrl = "$baseUrl/api/read/${chapter.chapterId}/${index + 1}?v=2#${chapter.toJsonString()}")
         }
     }
-
-    // ==================== Pages ==========================
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
-        val imageUrl = page.imageUrl ?: throw IllegalStateException("Missing image URL")
-        val chapterId = imageUrl.toHttpUrl().pathSegments.getOrNull(2)
-            ?: throw IllegalStateException("Missing chapter id")
-        val session = chapterSessions[chapterId]
-            ?: throw IllegalStateException("Missing chapter session")
-
+        val url = page.imageUrl!!.toHttpUrl()
+        val dto = url.fragment!!.parseAs<ChapterDto>()
         val imageHeaders = headers.newBuilder()
-            .set("Referer", page.url)
-            .set("X-Pluma-Token", session.token)
-            .set("Accept-Encoding", "identity")
+            .set("X-Pluma-Token", dto.chapterToken)
             .build()
-
-        return GET(imageUrl, imageHeaders)
+        return GET(url, imageHeaders)
     }
 
-    // ==================== Dto ==========================
-    @Serializable
-    private class SearchDto(
-        val results: List<MangaDto>,
-    )
-
-    @Serializable
-    private class MangaDto(
-        val title: String,
-        val slug: String,
-        val coverPath: String,
-    )
-
-    // ==================== Helpers ==========================
-    private fun interceptReadImageRequest(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        if (!request.url.encodedPath.startsWith("/api/read/")) {
-            return chain.proceed(request)
-        }
-
-        val normalizedRequest = request.withIdentityEncoding()
-        val chapterId = normalizedRequest.url.pathSegments.getOrNull(2)
-            ?: return chain.proceed(normalizedRequest)
-        val session = chapterSessions[chapterId]
-            ?: return chain.proceed(normalizedRequest)
-        val pageNumber = normalizedRequest.url.pathSegments.getOrNull(3)?.toIntOrNull()
-
-        if (pageNumber != null &&
-            normalizedRequest.url.pathSegments.size == 4 &&
-            session.requiresComposite(pageNumber)
-        ) {
-            return imageBuilder.buildCompositeResponse(
-                request = normalizedRequest,
-                chapterId = chapterId,
-                pageNumber = pageNumber,
-                session = session,
-            )
-        }
-
-        val response = chain.proceed(normalizedRequest)
-        if (!response.isSuccessful) {
-            return response
-        }
-
-        return response.decryptImage(session.baseSeed)
-    }
-
-    private fun Request.withIdentityEncoding(): Request = newBuilder()
-        .header("Accept-Encoding", "identity")
-        .build()
-
-    private fun Response.decryptImage(baseSeed: IntArray): Response {
-        val responseBody = body
-        val decryptedBytes = PlumaImageDecrypt.decryptImageBytes(
-            encryptedBytes = responseBody.bytes(),
-            baseSeed = baseSeed,
-        )
-
-        return newBuilder()
-            .body(decryptedBytes.toResponseBody(responseBody.contentType() ?: IMAGE_MEDIA_TYPE))
-            .build()
-    }
-
-    private fun Element.toSManga(): SManga = SManga.create().apply {
-        title = selectFirst("h3")!!.text()
-        thumbnail_url = selectFirst("img")?.absUrl("src")
-        setUrlWithoutDomain(absUrl("href").toSMangaUrl())
-    }
-
-    private fun MangaDto.toSManga(): SManga = SManga.create().apply {
-        title = this@toSManga.title
-        thumbnail_url = "$baseUrl/api/cover/${this@toSManga.coverPath}"
-        setUrlWithoutDomain(this@toSManga.slug.toSMangaUrl())
-    }
-
-    private fun Element.toSChapter(): SChapter = SChapter.create().apply {
-        name = selectFirst("span:first-child")!!.text()
-        setUrlWithoutDomain(absUrl("href").toSChapterUrl())
-    }
-
-    private fun String.toSMangaUrl(): String = "/series/${extractLastPathSegment()}"
-
-    private fun String.toSChapterUrl(): String = "/ler/${extractLastPathSegment()}"
-
-    private fun String.extractLastPathSegment(): String {
-        val pathSegment = runCatching {
-            toHttpUrl().pathSegments.lastOrNull()
-        }.getOrNull()
-
-        if (!pathSegment.isNullOrBlank()) {
-            return pathSegment
-        }
-
-        return substringBefore('?')
-            .trimEnd('/')
-            .substringAfterLast('/')
-            .ifBlank { throw IllegalStateException("Missing path segment") }
-    }
-
-    private companion object {
-        val IMAGE_MEDIA_TYPE = "image/jpeg".toMediaType()
-    }
+    override fun imageUrlParse(response: Response): String = ""
 }

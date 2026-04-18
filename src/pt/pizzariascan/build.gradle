@@ -3,7 +3,7 @@ ext {
     extClass = '.Pizzariascan'
     themePkg = 'mangawork'
     baseUrl = 'https://pizzariacomics.com'
-    overrideVersionCode = 48
+    overrideVersionCode = 47
     isNsfw = true
 }
 
