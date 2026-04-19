@@ -19,16 +19,6 @@ import java.io.IOException
 
 class PlumaComics : HttpSource() {
 
-    private val drmHelper by lazy { PlumaComicsDrmHelper(baseUrl) }
-    private val stripClient by lazy {
-        // Avoid interceptor recursion when fetching strip segments for a composed page.
-        super.client.newBuilder()
-            .rateLimit(2)
-            .build()
-    }
-    private val imageBuilder by lazy { PlumaComicsImageBuilder(stripClient, drmHelper) }
-    private val chapterSessions = ConcurrentHashMap<String, ChapterSession>()
-
     override val name: String = "Pluma Comics"
 
     override val lang: String = "pt-BR"
@@ -37,37 +27,35 @@ class PlumaComics : HttpSource() {
 
     override val supportsLatest: Boolean = true
 
-    override val versionId: Int = 5
-
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Referer", "$baseUrl/")
-
     override val client = super.client.newBuilder()
         .rateLimit(3, 1)
         .addInterceptor(ImageDecryptInterceptor())
         .build()
 
-    // ==================== Popular ==========================
-    override fun popularMangaRequest(page: Int): Request {
-        val suffix = if (page > 1) "&page=$page" else ""
-        return GET("$baseUrl/series?sort=popular$suffix", headers)
-    }
+    override val versionId = 5
+
+    // Popular
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/series?sort=popular", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val document = response.asJsoup()
-        val mangas = document.select("a.group[href*=series]").map { it.toSManga() }
-        val currentPage = response.request.url.queryParameter("page")?.toIntOrNull() ?: 1
-        val hasNextPage = document.selectFirst("a[href*='page=${currentPage + 1}']") != null
-        return MangasPage(mangas, hasNextPage = hasNextPage)
+        val mangas = document.select("a.group[href*=series]").map { element ->
+            SManga.create().apply {
+                title = element.selectFirst("h3")!!.text()
+                thumbnail_url = element.selectFirst("img")?.absUrl("src")
+                setUrlWithoutDomain(element.absUrl("href"))
+            }
+        }
+        return MangasPage(mangas, hasNextPage = document.selectFirst("a.btn-primary[href*=page]") != null)
     }
 
-    // ==================== Latest ==========================
-    override fun latestUpdatesRequest(page: Int): Request {
-        val suffix = if (page > 1) "?page=$page" else ""
-        return GET("$baseUrl/series$suffix", headers)
-    }
+    // Latest
+
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/series", headers)
 
     override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
+
+    // Search
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = "$baseUrl/api/search".toHttpUrl().newBuilder()
@@ -76,53 +64,51 @@ class PlumaComics : HttpSource() {
         return GET(url, headers)
     }
 
-    // ==================== Search ==========================
     override fun searchMangaParse(response: Response): MangasPage {
         val dto = response.parseAs<SearchDto>()
-        return MangasPage(
-            mangas = dto.results.map { it.toSManga() },
-            hasNextPage = false,
-        )
+        val mangas = dto.results.map {
+            SManga.create().apply {
+                title = it.title
+                thumbnail_url = "$baseUrl/api/cover/${it.coverPath}"
+                url = "/series/${it.slug}"
+            }
+        }
+
+        return MangasPage(mangas, hasNextPage = false)
     }
 
-    // ==================== Details ==========================
+    // Details
+
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
         return SManga.create().apply {
-            val pageTitle = document.selectFirst("meta[property=og:title]")?.attr("content")
-                ?: document.selectFirst("title")!!.text()
-
-            title = pageTitle.substringBeforeLast(" |", pageTitle)
+            title = document.selectFirst("meta[property*=title]")!!.text().substringBeforeLast("|")
             thumbnail_url = document.selectFirst("img.cover-img")?.absUrl("src")
             description = document.selectFirst("div.card > p.text-sm")?.text()
             genre = document.select(".flex.flex-wrap > span").joinToString { it.text() }
-            status = when (document.selectFirst(".flex.items-center span.text-xs.font-bold.uppercase:last-child")?.text()?.lowercase()) {
-                "em andamento" -> SManga.ONGOING
-                else -> SManga.UNKNOWN
+            document.selectFirst(".flex.items-center span.text-xs.font-bold.uppercase:last-child")?.text()?.let {
+                status = when (it.lowercase()) {
+                    "em andamento" -> SManga.ONGOING
+                    else -> SManga.UNKNOWN
+                }
             }
-            setUrlWithoutDomain(document.location().toSMangaUrl())
+            setUrlWithoutDomain(document.location())
         }
     }
 
-    // ==================== Chapters ==========================
+    // Chapters
+
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
-        return document.select(".card a[href*=ler]").map { it.toSChapter() }
+        return document.select(".card a[href*=ler]").mapIndexed { index, element ->
+            SChapter.create().apply {
+                name = element.selectFirst("span:first-child")!!.text()
+                setUrlWithoutDomain(element.absUrl("href"))
+            }
+        }
     }
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        val chapterHeaders = headers.newBuilder()
-            .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .set("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
-            .set("Accept-Encoding", "identity")
-            .set("Cache-Control", "no-cache")
-            .set("Pragma", "no-cache")
-            .set("Connection", "close")
-            .set("Upgrade-Insecure-Requests", "1")
-            .build()
-
-        return GET(baseUrl + chapter.url, chapterHeaders)
-    }
+    // Pages
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
