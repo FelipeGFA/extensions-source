@@ -102,7 +102,7 @@ fun ChapterDto.toSChapter(mangaSlug: String) = SChapter.create().apply {
     } else {
         "Capítulo ${number.removeSuffix(".0")}"
     }
-    date_upload = dateFormat.tryParse(createdAt.substringBefore(".").removeSuffix("Z"))
+    date_upload = dateFormat.tryParse(createdAt.substringBefore("."))
 }
 
 private fun String?.parseStatus() = when (this?.lowercase()) {
