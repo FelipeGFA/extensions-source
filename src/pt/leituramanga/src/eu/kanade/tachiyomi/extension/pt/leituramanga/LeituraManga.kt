@@ -145,8 +145,37 @@ class LeituraManga : HttpSource() {
 
     // ================= Pages ==================
 
-    override fun pageListParse(response: Response): List<Page> = LeituraMangaDecrypt.getImageList(response.asJsoup()).mapIndexed { index, image ->
-        Page(index, imageUrl = image.absUrl(cdnUrl))
+    override fun pageListParse(response: Response): List<Page> {
+        val document = response.asJsoup()
+        val password = document.getAESPassword()
+        val content = document.decryptPayload(password).takeUnless(String::isBlank)
+            ?: throw IOException("Páginas encontradas")
+
+        return content.parseAs<List<ImageDto>>().mapIndexed { index, image ->
+            Page(index, imageUrl = image.absUrl(cdnUrl))
+        }
+    }
+
+    private fun Document.getAESPassword(): String = extractNextJs<AESPassword>()?.variant?.joinToString("") ?: throw IOException("Senha não encontrada")
+
+    private fun Document.decryptPayload(password: String): String {
+        val script = QuickJs.create().use {
+            it.evaluate(
+                """
+                globalThis.self = globalThis;
+                ${select("script:containsData(self.__next_f)").joinToString("\n", transform = Element::data)}
+                self.__next_f.map(it => it[it.length - 1]).join('')
+                """.trimIndent(),
+            ) as String
+        }
+
+        val encryptedContent = extractNextJs<EncryptedContent>()
+
+        val payload = when {
+            encryptedContent != null && encryptedContent.payload.startsWith(PREFIX_SALT) -> encryptedContent.payload
+            else -> ENCRYPTED_CONTENT_REGEX.find(script)?.groupValues?.last()
+        }
+        return CryptoAES.decrypt(payload!!, password)
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()

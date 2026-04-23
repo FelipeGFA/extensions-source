@@ -101,3 +101,13 @@ class MangaInfoDto(
     val mangaSlug: String,
     val mangaId: String,
 )
+
+@Serializable
+class AESPassword(
+    val variant: List<String>,
+)
+
+@Serializable
+class EncryptedContent(
+    val payload: String,
+)
