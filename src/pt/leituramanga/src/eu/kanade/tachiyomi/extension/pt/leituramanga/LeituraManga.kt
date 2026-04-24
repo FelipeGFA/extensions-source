@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.extension.pt.leituramanga
 
+import app.cash.quickjs.QuickJs
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -9,11 +10,14 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.cryptoaes.CryptoAES
 import keiyoushi.utils.extractNextJs
 import keiyoushi.utils.parseAs
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.io.IOException
 
 class LeituraManga : HttpSource() {
@@ -179,4 +183,11 @@ class LeituraManga : HttpSource() {
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+
+    companion object {
+        // 'U2FsdGVkX1' is the Base64 representation of the 'Salted__' prefix.
+        // It indicates the data was encrypted using CryptoJS
+        private const val PREFIX_SALT = "U2FsdGVkX1"
+        private val ENCRYPTED_CONTENT_REGEX = """$PREFIX_SALT[^=]+=+|$PREFIX_SALT[^:]+""".toRegex()
+    }
 }
