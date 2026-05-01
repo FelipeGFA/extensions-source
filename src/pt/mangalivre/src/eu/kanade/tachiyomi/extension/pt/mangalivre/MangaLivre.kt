@@ -167,15 +167,8 @@ class MangaLivre :
                 append("Use titulos alternativos como principal quando disponivel.")
                 append(" Essa opção não tem efeito sobre obras já adicionadas na sua bibilioteca")
             }
-
             setDefaultValue(false)
-
-            setOnPreferenceChangeListener { _, newValue ->
-                preferences.edit()
-                    .putBoolean(ALTERNATIVE_TITLE_PREF, newValue as Boolean)
-                    .commit()
-            }
-        }.let(screen::addPreference)
+        }.also(screen::addPreference)
     }
 
     companion object {
