@@ -1,4 +1,4 @@
-package eu.kanade.tachiyomi.extension.zh.jinmantiantang
+package eu.kanade.tachiyomi.extension.zh.tencentcomics
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
@@ -7,32 +7,25 @@ import android.os.Bundle
 import android.util.Log
 import kotlin.system.exitProcess
 
-/**
- * Springboard that accepts https://www.manhuagui.com/comic/xxx intents and redirects them to
- * the main tachiyomi process. The idea is to not install the intent filter unless
- * you have this extension installed, but still let the main tachiyomi app control
- * things.
- */
-class JinmantiantangUrlActivity : Activity() {
-
+class UrlActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val pathSegments = intent?.data?.pathSegments
-        if (pathSegments != null && pathSegments.size > 1) {
-            val titleid = pathSegments[1]
+        if (pathSegments != null && pathSegments.size > 3) {
+            val id = pathSegments[3]
             val mainIntent = Intent().apply {
                 action = "eu.kanade.tachiyomi.SEARCH"
-                putExtra("query", "${Jinmantiantang.PREFIX_ID_SEARCH}$titleid")
+                putExtra("query", "${TencentComics.ID_SEARCH_PREFIX}$id")
                 putExtra("filter", packageName)
             }
 
             try {
                 startActivity(mainIntent)
             } catch (e: ActivityNotFoundException) {
-                Log.e("JinmantiantangUrl", e.toString())
+                Log.e("TencentUrlActivity", e.toString())
             }
         } else {
-            Log.e("JinmantiantangUrl", "could not parse uri from intent $intent")
+            Log.e("TencentUrlActivity", "could not parse uri from intent $intent")
         }
 
         finish()
